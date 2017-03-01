@@ -9,3 +9,4 @@ https://hackaday.io/projects/tag/nrf24l01/range/all (Varios Projetos)\n
  
 #Notas
 Falar sobre alternativas (XBee)
+Falar de cada passo efetuado, investigação feita (pormenores que nem pareçam relevantes), mencionar projetos semelhantes
