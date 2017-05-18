@@ -10,7 +10,7 @@ RF24 radio(9,10);
 RF24Network network(radio);
 RF24Mesh mesh(radio,network);
 
-
+long displayTimer=0;
 
 
 //FOR THE LIBRERY
@@ -21,8 +21,8 @@ int sendACK(uint8_t num, uint8_t remoteNode);
 #define MAX(a,b) (((a)>(b))?(a):(b))
 
 
-#define BUFFERSIZE 12
-#define ACKMAXSIZE 50
+#define BUFFERSIZE 8
+#define ACKMAXSIZE 18
 #define PAYLOADSIZE 22
 
 #define DATATYPE_DATA 1
@@ -33,13 +33,13 @@ int sendACK(uint8_t num, uint8_t remoteNode);
 #define WAIT_ACK_U 1 
 
 #define DEFAULT_DELAY 85
-#define DEFAULT_DELAY_LOOP 5
+#define DEFAULT_DELAY_LOOP 10
 
 #define ACTUALVERSION 2
 
 #define MASTERNODE 0
 
-#define THISNODE 0
+#define THISNODE 1 //Change
 
 typedef struct {
     RF24NetworkHeader *header;
@@ -74,20 +74,24 @@ PktL2PRT bufferPkt[BUFFERSIZE];
 listRecived recivedFrom;
 
 
-void blink(){
-  digitalWrite(LED_BUILTIN, HIGH);   // turn the LED on (HIGH is the voltage level)
-  delay(1000);                       // wait for a second
-  digitalWrite(LED_BUILTIN, LOW);    // turn the LED off by making the voltage LOW
-  delay(1000); 
+//incretemnter Methods 
+
+int powint(int x, int y)
+{
+ int val=1;
+ for(int z=0;z<y;z++)
+ {
+     val=val*x;
+ }
+ return val;
 }
 
-//incretemnter Methods 
 uint16_t incInt16Bit(uint16_t counter, int nbits){
-   return (counter+1)%(2^nbits);
+   return (counter+1)%powint(2,nbits);
 }
 
 uint8_t incInt8Bit(uint8_t counter, int nbits){
-   return (counter+1)%(2^nbits);
+   return (counter+1)%powint(2,nbits);
 } 
 
 
@@ -231,10 +235,12 @@ void processReccivedData(RF24NetworkHeader header, byte* data){
   head->data=novo;
 
   if(!inInList(head,recivedFrom)){ //novo pacote recebido
+      Serial.println("NOVO ");
      recivedFrom=addToList(head,recivedFrom);
      pruneList(recivedFrom,0,ACKMAXSIZE/2); //ver se nao sonseguir meter em fila o que faço pode dar erro no metodo seguinte
      enqueue(header,data);
   }else{ //duplicado
+    Serial.println("DUP ");
     free(novo);
     free(head);
   } 
@@ -242,6 +248,7 @@ void processReccivedData(RF24NetworkHeader header, byte* data){
 
 //public
 int reciveData(uint8_t expectedData,uint8_t num, long timeout=DEFAULT_DELAY){ //num so faz sentido se esperarmos um ACK
+  
   bool done= false;
   long startTry = millis();
   long now =startTry;
@@ -249,11 +256,12 @@ int reciveData(uint8_t expectedData,uint8_t num, long timeout=DEFAULT_DELAY){ //
     done =true;
   }
   while(!network.available() && startTry+timeout>now){
-    Serial.println("LOOP ");
+    mesh.update();
+    now=millis();
     delay(DEFAULT_DELAY_LOOP);
   }
   if(network.available()){//novo pacote
-    Serial.println("NOVO PACOTE");
+    Serial.print("NOVO PACOTE ");
     RF24NetworkHeader header;
     byte payload[PAYLOADSIZE];  //pode dar merda
     network.read(header,&payload,sizeof(payload));
@@ -268,6 +276,7 @@ int reciveData(uint8_t expectedData,uint8_t num, long timeout=DEFAULT_DELAY){ //
         //recebo um ack nao esperado 
       }
     }else if(getPktType(header.type)==DATATYPE_DATA){
+      Serial.print("DATA ");
       processReccivedData(header,payload); //Pode dar merda ver &payload
       if(expectedData==DATATYPE_DATA){
         done=true;
@@ -282,11 +291,23 @@ int reciveData(uint8_t expectedData,uint8_t num, long timeout=DEFAULT_DELAY){ //
       return reciveData(expectedData, num, leftTime); 
     }
   }else{ //timeout
-     Serial.println("Timeout ");
+     Serial.println("TIMEOUT");
      return -1;
   }
   
 }
+
+//private
+bool sendDataNetworkADDR(uint8_t type, uint8_t num, byte* payload, uint8_t dataSize, uint16_t remoteNode){
+  char headerType;
+  byte headerMy;
+  buildHeader(type,dataSize,ACTUALVERSION,num,&headerType,&headerMy);
+  byte dataTosend[PAYLOADSIZE];
+  dataTosend[0]= headerMy;
+  memcpy(dataTosend+1, payload, MIN(PAYLOADSIZE-1,dataSize)); //pode dar bosta
+  return mesh.write(remoteNode,dataTosend,headerType,sizeof(dataTosend)); 
+}
+
 
 //private
 bool sendData(uint8_t type, uint8_t num, byte* payload, uint8_t dataSize, uint8_t remoteNode=0){
@@ -295,15 +316,21 @@ bool sendData(uint8_t type, uint8_t num, byte* payload, uint8_t dataSize, uint8_
   buildHeader(type,dataSize,ACTUALVERSION,num,&headerType,&headerMy);
   byte dataTosend[PAYLOADSIZE];
   dataTosend[0]= headerMy;
-  memcpy(dataTosend+1, payload, MAX(PAYLOADSIZE-1,dataSize)); //pode dar bosta
+  memcpy(dataTosend+1, payload, MIN(PAYLOADSIZE-1,dataSize)); //pode dar bosta
   return mesh.write(dataTosend,headerType,sizeof(dataTosend),remoteNode); 
 }
 
 //private
 int sendACK(PairRecivedPTR pair){
-  Serial.println("SEND ACK ");
+  Serial.print("SEND ACK ");
+  Serial.print(pair->num);
+  Serial.print(" To ");
+  Serial.println(pair->nodeADDR);
   byte data[1];
-  return sendData(DATATYPE_ACK,pair->num,data,0,pair->nodeADDR);
+  bool result=false;
+  result=sendDataNetworkADDR(DATATYPE_ACK,pair->num,data,sizeof(data),pair->nodeADDR);
+  Serial.println(result);
+  return result;
 }
 
 //public
@@ -320,8 +347,9 @@ int sendRData( byte* payload, uint8_t dataSize,int maxTent, uint8_t remoteNode=0
     nTent++;
     if(leave_me){
       returnMessage=1;
-      Serial.println("Recive ACK?? ");
-      int aCKRecived = reciveData(DATATYPE_ACK,my_seq_num,200);
+      Serial.print("Recive ACK?? ");
+      int aCKRecived = reciveData(DATATYPE_ACK,my_seq_num,2000);
+      Serial.println(aCKRecived);
       if(aCKRecived==1){
         sent=true;
         returnMessage=0;
@@ -341,7 +369,7 @@ int sendUData( byte* payload, uint8_t dataSize, uint8_t remoteNode=0){ //return 
   bool leave_me = sendData(DATATYPE_DATA,my_seq_num,payload,dataSize,remoteNode);
   if(leave_me){
       returnMessage=1;
-      int aCKRecived = reciveData(DATATYPE_ACK,my_seq_num);
+      int aCKRecived = reciveData(DATATYPE_ACK,my_seq_num,2000);
       if(aCKRecived==1){
         returnMessage=0;
       }
@@ -367,24 +395,35 @@ void setChildMesh(bool allow){
 
 //public
 void update(){
-  network.update();
   mesh.update();
   if(doDHCP){
     DHCPMesh();
+    if(millis() - displayTimer > 5000){
+    displayTimer = millis();
+    Serial.println(" ");
+    Serial.println(F("********Assigned Addresses********"));
+     for(int i=0; i<mesh.addrListTop; i++){
+       Serial.print("NodeID: ");
+       Serial.print(mesh.addrList[i].nodeID);
+       Serial.print(" RF24Network Address: 0");
+       Serial.println(mesh.addrList[i].address,OCT);
+     }
+    Serial.println(F("**********************************"));
+    }
   }
   Serial.println("RECIVE DATA ANY ");
   int s = reciveData(DATATYPE_ANY,0,100);
-  Serial.println(s);  
+  //Serial.println(s);  
 }
 
 //public
-bool begin(uint8_t nodeID,bool allowChild=true ,uint8_t channel = MESH_DEFAULT_CHANNEL, rf24_datarate_e data_rate = RF24_1MBPS, uint32_t timeout=MESH_RENEWAL_TIMEOUT ){
+/*bool begin(uint8_t nodeID,bool allowChild=true ,uint8_t channel = MESH_DEFAULT_CHANNEL, rf24_datarate_e data_rate = RF24_1MBPS, uint32_t timeout=MESH_RENEWAL_TIMEOUT ){
   if(nodeID==0) doDHCP=true;
   setChildMesh(allowChild);
   return  mesh.begin(channel,data_rate,timeout );
 
 }
-
+*/
 //public
 PktL2PRT checkNextReception(){
   return dequeue();
@@ -446,7 +485,6 @@ void loadDHCPMesh(){
 }
 
 void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);
   // put your setup code here, to run once:
   my_seq_num =0;
   version_pt=0;
@@ -461,17 +499,26 @@ void setup() {
   Serial.begin(57600);
   Serial.println("SETUP");
   if(MASTERNODE==THISNODE){
-     doDHCP=true;
-    mesh.setNodeID(THISNODE);
+    doDHCP=true;
+    /*
+    mesh.setNodeID(0);
+    mesh.begin();
+    */
+    // Set the nodeID to 0 for the master node
+    mesh.setNodeID(0);
+    Serial.println(mesh.getNodeID());
+    // Connect to the mesh
     mesh.begin();
   }else{
     mesh.setNodeID(THISNODE);
+    // Connect to the mesh
+    Serial.println(F("Connecting to the mesh..."));
     mesh.begin();
   }
-  setChildMesh(true);
+  //setChildMesh(true);
 }
 
-
+/*
 void testHeaderBuild(){
   char headerType;
   byte headerMy;
@@ -502,12 +549,12 @@ void testHeaderBuild(){
   Serial.println(getPktNum(headerMy));
   my_seq_num++;
 }
-
+*/
 void testReciver(){
-  int recived = reciveData(DATATYPE_DATA,0,20);
+  Serial.println("Wait recive ");
+  int recived = reciveData(DATATYPE_DATA,0);
   Serial.print("Recived code ");
   Serial.println(recived);
-  if(recived==1){
     bool onFila = checkPendingReception();
     Serial.print("onFila code ");
     Serial.println(onFila);
@@ -520,17 +567,18 @@ void testReciver(){
       Serial.println(pacote->header->to_node);
       Serial.print("\tID: ");
       Serial.println(pacote->header->id);
+      //trustHeader
       char* message = (char*)pacote->data;
       Serial.print("Message: ");
       Serial.println(message);
       free(pacote);
     }
-  }
 }
 
 void testSend(){
   char* payload = "OLA MUNDO CONF";
-  int sentCode = sendRData((byte*)payload,strlen(payload),MASTERNODE);
+  Serial.println("Will Send ");
+  int sentCode = sendRData((byte*)payload,strlen(payload),3);
   Serial.print("Sent code ");
   Serial.println(sentCode);
   delay(100);
@@ -538,6 +586,7 @@ void testSend(){
 
 
 void loop() {
+  update();
   delay(1000);
   if(MASTERNODE==THISNODE){
     testReciver();
