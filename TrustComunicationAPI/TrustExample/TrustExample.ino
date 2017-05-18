@@ -39,7 +39,7 @@ int sendACK(uint8_t num, uint8_t remoteNode);
 
 #define MASTERNODE 0
 
-#define THISNODE 1 //Change
+#define THISNODE 0 //Change
 
 typedef struct {
     RF24NetworkHeader *header;
@@ -167,7 +167,10 @@ void enqueue(RF24NetworkHeader header, byte* data){
     }
     pacote->header= myHeader;
     pacote->trustHeader=data[0];
-    memcpy(pacote->data, data+1, MIN(PAYLOADSIZE-1,dataSize)); //
+    for(int i = 1;i<PAYLOADSIZE;i++){
+      pacote->data[i]=0x00;
+    }
+    memcpy(pacote->data, data+1, MIN(PAYLOADSIZE,dataSize)); //
     //pacote esta criado, meter-lo na queue
     bufferPkt[buffer_pos] = pacote;
     buffer_pos++;
@@ -303,6 +306,9 @@ bool sendDataNetworkADDR(uint8_t type, uint8_t num, byte* payload, uint8_t dataS
   byte headerMy;
   buildHeader(type,dataSize,ACTUALVERSION,num,&headerType,&headerMy);
   byte dataTosend[PAYLOADSIZE];
+  for(int i = 1;i<PAYLOADSIZE;i++){
+      dataTosend[i]=0x00;
+  }
   dataTosend[0]= headerMy;
   memcpy(dataTosend+1, payload, MIN(PAYLOADSIZE-1,dataSize)); //pode dar bosta
   return mesh.write(remoteNode,dataTosend,headerType,sizeof(dataTosend)); 
@@ -315,6 +321,9 @@ bool sendData(uint8_t type, uint8_t num, byte* payload, uint8_t dataSize, uint8_
   byte headerMy;
   buildHeader(type,dataSize,ACTUALVERSION,num,&headerType,&headerMy);
   byte dataTosend[PAYLOADSIZE];
+  for(int i = 1;i<PAYLOADSIZE;i++){
+      dataTosend[i]=0x00;
+  }
   dataTosend[0]= headerMy;
   memcpy(dataTosend+1, payload, MIN(PAYLOADSIZE-1,dataSize)); //pode dar bosta
   return mesh.write(dataTosend,headerType,sizeof(dataTosend),remoteNode); 
@@ -327,6 +336,7 @@ int sendACK(PairRecivedPTR pair){
   Serial.print(" To ");
   Serial.println(pair->nodeADDR);
   byte data[1];
+  data[0]=0x00;
   bool result=false;
   result=sendDataNetworkADDR(DATATYPE_ACK,pair->num,data,sizeof(data),pair->nodeADDR);
   Serial.println(result);
@@ -558,16 +568,20 @@ void testReciver(){
     bool onFila = checkPendingReception();
     Serial.print("onFila code ");
     Serial.println(onFila);
-    if(onFila){
+    while(onFila){
       PktL2PRT pacote = dequeue();
       Serial.println("\theader ");
       Serial.print("\tFrom: ");
       Serial.println(pacote->header->from_node);
       Serial.print("\tTO: ");
       Serial.println(pacote->header->to_node);
-      Serial.print("\tID: ");
-      Serial.println(pacote->header->id);
-      //trustHeader
+      Serial.print("\tNUM: ");
+      Serial.println(getPktNum(pacote->trustHeader));
+      Serial.print("\tSize: ");
+      Serial.println(getPktSize(pacote->header->type));
+      Serial.print("\tType: ");
+      Serial.println(getPktType(pacote->header->type));
+      //pacote->trustHeader
       char* message = (char*)pacote->data;
       Serial.print("Message: ");
       Serial.println(message);
@@ -586,6 +600,15 @@ void testSend(){
 
 
 void loop() {
+  /*char* st = "OLA MUNDO CONF";
+  byte payload[PAYLOADSIZE];
+  for(int i = 1;i<PAYLOADSIZE;i++){
+    payload[i]=0x00;
+  }
+  memcpy(payload+1,st,MIN(strlen(st),PAYLOADSIZE));
+  Serial.print("Copy ");
+  Serial.println((char*)payload+1);
+  delay(2000);*/
   update();
   delay(1000);
   if(MASTERNODE==THISNODE){
