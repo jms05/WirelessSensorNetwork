@@ -153,7 +153,7 @@ PktL2PRT dequeue(){
   return ret;
 }
 
-void enqueue(RF24NetworkHeader header, byte* data){
+int enqueue(RF24NetworkHeader header, byte* data){
   if (!queueIsFull()){
     RF24NetworkHeader *myHeader = (RF24NetworkHeader*) malloc(sizeof(RF24NetworkHeader));
     if(myHeader==NULL){
@@ -175,7 +175,10 @@ void enqueue(RF24NetworkHeader header, byte* data){
     bufferPkt[buffer_pos] = pacote;
     buffer_pos++;
     
-  } 
+  }else{ //queue is full
+    return -1;
+  }
+  return 0;
 }
 
 
@@ -221,15 +224,13 @@ listRecived addToList(listRecived novo, listRecived list){
 //OUR Library Methods
 
 //private
-void processReccivedData(RF24NetworkHeader header, byte* data){
+int processReccivedData(RF24NetworkHeader header, byte* data){ //-1 recebido mas descartado, 0 recebido e na fila, 1 recebido mas duplicado 
   PairRecivedPTR novo= (PairRecivedPTR)malloc(sizeof(PairRecived));
   if(novo==NULL){
       exit -3;
   }
   novo->nodeADDR=header.from_node;
   novo->num = getPktNum(data[0]);
-  // SEND ACK
-  sendACK(novo);
   listRecived head = malloc(sizeof(node_t));
   if (head == NULL) {
     exit -4;
@@ -238,20 +239,37 @@ void processReccivedData(RF24NetworkHeader header, byte* data){
   head->data=novo;
 
   if(!inInList(head,recivedFrom)){ //novo pacote recebido
-      Serial.println("NOVO ");
-     recivedFrom=addToList(head,recivedFrom);
-     pruneList(recivedFrom,0,ACKMAXSIZE/2); //ver se nao sonseguir meter em fila o que faço pode dar erro no metodo seguinte
-     enqueue(header,data);
+     Serial.println("NOVO ");
+     int onfila = enqueue(header,data); //0 se ficou na fila
+     if(onfila==0){
+      recivedFrom=addToList(head,recivedFrom);
+      pruneList(recivedFrom,0,ACKMAXSIZE/2);
+      // SEND ACK
+      sendACK(novo);
+      return 0;
+     }else{ //sem espaço em buffer 
+        return -1;
+     }
   }else{ //duplicado
+    // SEND ACK
+    sendACK(novo);
     Serial.println("DUP ");
     free(novo);
     free(head);
+    return 1;
   } 
 }
 
-//public
-int reciveData(uint8_t expectedData,uint8_t num, long timeout=DEFAULT_DELAY){ //num so faz sentido se esperarmos um ACK
-  
+
+
+
+
+//private
+int reciveDataPrivate(RF24NetworkHeader header, byte payload[], size_t size_payload, uint8_t expectedData,uint8_t num, long timeout=DEFAULT_DELAY){ //num so faz sentido se esperarmos um ACK
+  // 0  pacote ACK recebido é o esparado, ou de dados esta guardado
+  // -1 timeout
+  // -2 quero dados mas a fila está cheia
+  int returnMessage=-1;
   bool done= false;
   long startTry = millis();
   long now =startTry;
@@ -265,33 +283,43 @@ int reciveData(uint8_t expectedData,uint8_t num, long timeout=DEFAULT_DELAY){ //
   }
   if(network.available()){//novo pacote
     Serial.print("NOVO PACOTE ");
-    RF24NetworkHeader header;
-    byte payload[PAYLOADSIZE];  //pode dar merda
-    network.read(header,&payload,sizeof(payload));
+    network.read(header,payload,size_payload);
     if(getPktType(header.type)==DATATYPE_ACK){ //recebi um ACK
       Serial.println(" ACK ");
       if(expectedData ==DATATYPE_ACK && num==getPktNum(payload[0])){ //é o ACK estaparado update stats
-        done=true;
         Serial.println("Esperado ");
         if(waitACKType ==WAIT_ACK_R ) R_confirmed =incInt16Bit(R_confirmed,16);
         else U_confirmed =incInt16Bit(R_confirmed,16);
+        done=true;
+        returnMessage= 0; 
       }else{
         //recebo um ack nao esperado 
       }
     }else if(getPktType(header.type)==DATATYPE_DATA){
       Serial.print("DATA ");
-      processReccivedData(header,payload); //Pode dar merda ver &payload
+      int saved = processReccivedData(header,payload); //Pode dar merda ver &payload
       if(expectedData==DATATYPE_DATA){
         done=true;
+        switch(saved){
+          case(-1) :{ //sem espaço na fila
+            returnMessage= -2;
+          }
+          case(0):{ //tudo ok
+            returnMessage= 0;
+          }
+          case(1):{ //duplicado
+            returnMessage= 0;
+          }
+        }  
       }
     }
     if(done){
-      return 1; 
+      return returnMessage;
     }else{
       //nao era o esperado tento preceber pelo tempo que me falta
       now=millis();
       long leftTime = timeout-(now-startTry);
-      return reciveData(expectedData, num, leftTime); 
+      return reciveDataPrivate(header, payload,size_payload,expectedData, num, leftTime); 
     }
   }else{ //timeout
      Serial.println("TIMEOUT");
@@ -300,6 +328,16 @@ int reciveData(uint8_t expectedData,uint8_t num, long timeout=DEFAULT_DELAY){ //
   
 }
 
+//public
+int reciveData( uint8_t expectedData,uint8_t num, long timeout=DEFAULT_DELAY){ //num so faz sentido se esperarmos um ACK
+  // 0  pacote ACK recebido é o esparado, ou de dados esta guardado
+  // -1 timeout
+  // -2 quero dados mas a fila está cheia
+  RF24NetworkHeader header;
+  byte payload[PAYLOADSIZE];
+  return reciveDataPrivate(header,payload,sizeof(payload),expectedData,num,timeout); //ver se tenho de passar &payload
+  
+}
 //private
 bool sendDataNetworkADDR(uint8_t type, uint8_t num, byte* payload, uint8_t dataSize, uint16_t remoteNode){
   char headerType;
@@ -358,7 +396,7 @@ int sendRData( byte* payload, uint8_t dataSize,int maxTent, uint8_t remoteNode=0
     if(leave_me){
       returnMessage=1;
       Serial.print("Recive ACK?? ");
-      int aCKRecived = reciveData(DATATYPE_ACK,my_seq_num,2000);
+      int aCKRecived = !reciveData(DATATYPE_ACK,my_seq_num,2000);
       Serial.println(aCKRecived);
       if(aCKRecived==1){
         sent=true;
@@ -379,7 +417,7 @@ int sendUData( byte* payload, uint8_t dataSize, uint8_t remoteNode=0){ //return 
   bool leave_me = sendData(DATATYPE_DATA,my_seq_num,payload,dataSize,remoteNode);
   if(leave_me){
       returnMessage=1;
-      int aCKRecived = reciveData(DATATYPE_ACK,my_seq_num,2000);
+      int aCKRecived = !reciveData(DATATYPE_ACK,my_seq_num,2000);
       if(aCKRecived==1){
         returnMessage=0;
       }
