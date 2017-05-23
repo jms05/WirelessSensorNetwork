@@ -12,6 +12,7 @@ RF24Mesh mesh(radio,network);
 
 long displayTimer=0;
 
+void(* resetFunc) (void) = 0; //declare reset function @ address 0
 
 //FOR THE LIBRERY
 
@@ -157,13 +158,16 @@ int enqueue(RF24NetworkHeader header, byte* data){
   if (!queueIsFull()){
     RF24NetworkHeader *myHeader = (RF24NetworkHeader*) malloc(sizeof(RF24NetworkHeader));
     if(myHeader==NULL){
-      exit -1;
+      //exit -1;
+      resetFunc();
     }
     memcpy(myHeader, &header, sizeof(header));
     uint8_t dataSize = getPktSize(header.type);
     PktL2PRT pacote = (PktL2PRT)malloc(sizeof(PktL2));
     if(pacote==NULL){
-      exit -2;
+      //exit -2;
+      free(myHeader);
+      resetFunc();
     }
     pacote->header= myHeader;
     pacote->trustHeader=data[0];
@@ -174,7 +178,6 @@ int enqueue(RF24NetworkHeader header, byte* data){
     //pacote esta criado, meter-lo na queue
     bufferPkt[buffer_pos] = pacote;
     buffer_pos++;
-    
   }else{ //queue is full
     return -1;
   }
@@ -204,11 +207,13 @@ listRecived deleteList(listRecived list){
 }
 
 listRecived pruneList(listRecived list, int actual, int level){
-  if(actual>=level){
-    return deleteList(list);
+  if(list!=NULL){
+    if(actual>=level){
+      return deleteList(list);
+    }
+    list->next = pruneList(list->next,actual+1,level);
   }
-  list->next = pruneList(list->next,actual+1,level);
-  return list;
+ return list;
 }
 
 int sizeList(listRecived list){
@@ -227,27 +232,33 @@ listRecived addToList(listRecived novo, listRecived list){
 int processReccivedData(RF24NetworkHeader header, byte* data){ //-1 recebido mas descartado, 0 recebido e na fila, 1 recebido mas duplicado 
   PairRecivedPTR novo= (PairRecivedPTR)malloc(sizeof(PairRecived));
   if(novo==NULL){
-      exit -3;
+      //exit -3;
+      resetFunc();
   }
   novo->nodeADDR=header.from_node;
   novo->num = getPktNum(data[0]);
   listRecived head = malloc(sizeof(node_t));
   if (head == NULL) {
-    exit -4;
+    free(novo);
+    //exit -4;
+    resetFunc();
   }
   
   head->data=novo;
 
   if(!inInList(head,recivedFrom)){ //novo pacote recebido
-     Serial.println("NOVO ");
+     Serial.print("NOVO\nEnqueue: ");
      int onfila = enqueue(header,data); //0 se ficou na fila
+     Serial.println(onfila);
      if(onfila==0){
       recivedFrom=addToList(head,recivedFrom);
       pruneList(recivedFrom,0,ACKMAXSIZE/2);
       // SEND ACK
       sendACK(novo);
       return 0;
-     }else{ //sem espaço em buffer 
+     }else{ //sem espaço em buffer
+        free(novo);
+        free(head); 
         return -1;
      }
   }else{ //duplicado
@@ -265,10 +276,16 @@ int processReccivedData(RF24NetworkHeader header, byte* data){ //-1 recebido mas
 
 
 //private
-int reciveDataPrivate(RF24NetworkHeader header, byte payload[], size_t size_payload, uint8_t expectedData,uint8_t num, long timeout=DEFAULT_DELAY){ //num so faz sentido se esperarmos um ACK
+int reciveDataPrivate(/*RF24NetworkHeader header, byte payload[], size_t size_payload,*/ uint8_t expectedData,uint8_t num, long timeout=DEFAULT_DELAY){ //num so faz sentido se esperarmos um ACK
   // 0  pacote ACK recebido é o esparado, ou de dados esta guardado
   // -1 timeout
   // -2 quero dados mas a fila está cheia
+  /*
+   Rmover depois
+   */
+   RF24NetworkHeader header;
+   byte payload[PAYLOADSIZE];
+   size_t size_payload = sizeof(payload);
   int returnMessage=-1;
   bool done= false;
   long startTry = millis();
@@ -319,7 +336,7 @@ int reciveDataPrivate(RF24NetworkHeader header, byte payload[], size_t size_payl
       //nao era o esperado tento preceber pelo tempo que me falta
       now=millis();
       long leftTime = timeout-(now-startTry);
-      return reciveDataPrivate(header, payload,size_payload,expectedData, num, leftTime); 
+      return reciveDataPrivate(/*header, payload,size_payload,*/expectedData, num, leftTime); 
     }
   }else{ //timeout
      Serial.println("TIMEOUT");
@@ -333,9 +350,9 @@ int reciveData( uint8_t expectedData,uint8_t num, long timeout=DEFAULT_DELAY){ /
   // 0  pacote ACK recebido é o esparado, ou de dados esta guardado
   // -1 timeout
   // -2 quero dados mas a fila está cheia
-  RF24NetworkHeader header;
-  byte payload[PAYLOADSIZE];
-  return reciveDataPrivate(header,payload,sizeof(payload),expectedData,num,timeout); //ver se tenho de passar &payload
+  /*RF24NetworkHeader header;
+  byte payload[PAYLOADSIZE];*/
+  return reciveDataPrivate(/*header,payload,sizeof(payload),*/expectedData,num,timeout); //ver se tenho de passar &payload
   
 }
 //private
@@ -606,7 +623,7 @@ void testReciver(){
     bool onFila = checkPendingReception();
     Serial.print("onFila code ");
     Serial.println(onFila);
-    while(onFila){
+    if(onFila){
       PktL2PRT pacote = dequeue();
       Serial.println("\theader ");
       Serial.print("\tFrom: ");
