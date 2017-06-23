@@ -6,7 +6,7 @@
 #include <EEPROM.h>
 #include "RF24TrustComunication.h"
 
-#define NODE 0
+#define NODE 1
 RF24 radio(9,10);
 RF24Network network(radio);
 RF24Mesh mesh(radio,network);
