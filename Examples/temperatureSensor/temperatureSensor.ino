@@ -13,7 +13,7 @@
 #include <SPI.h>
 #include <RF24.h>
 
-
+#define MODE 1 //1 = R data, other = u data
 #define DHTPIN 2     // what pin we're connected to
 #define DHTTYPE DHT22   // DHT 22  (AM2302)
 
@@ -54,7 +54,9 @@ void loop() {
   p->temperature=temperature;
   
   Serial.println("Will Send ");
-  int sentCode = trustnet.sendUData((byte*)p,sizeof(payload),3);
+  int sentCode;
+  if(MODE!=1) sentCode = trustnet.sendUData((byte*)p,sizeof(payload),3);
+  else sentCode = trustnet.sendRData((byte*)p,sizeof(payload),3);
   Serial.print("Sent code ");
   Serial.println(sentCode);
   trustnet.update();
